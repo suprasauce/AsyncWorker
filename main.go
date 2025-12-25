@@ -28,7 +28,9 @@ func SendJob(j Job) {
 }
 
 func main() {
-	SendJob(Job{Num: 3})
+	for i := 0;i<10;i++ {
+		SendJob(Job{Num: i})
+	}
 	for {
 
 	}
