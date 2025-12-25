@@ -1,7 +1,6 @@
 package main
 
 type Job struct {
-	Id int
 	Num int
 }
 
@@ -29,7 +28,7 @@ func SendJob(j Job) {
 }
 
 func main() {
-	SendJob(Job{Id: 1, Num: 3})
+	SendJob(Job{Num: 3})
 	for {
 
 	}
