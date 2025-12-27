@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -12,20 +13,25 @@ type Job struct {
 }
 
 type Orchestrator struct {
-	jobQueue   chan Job
-	wg         sync.WaitGroup
-	mCtx       context.Context
-	wCtx       context.Context
-	wCtxCancel context.CancelFunc
+	jobQueue          chan Job
+	wg                sync.WaitGroup
+	mCtx              context.Context
+	wCtx              context.Context
+	wCtxCancel        context.CancelFunc
+	jobQueueListener  chan Job
+	currActiveWorkers int
+	mWg               sync.WaitGroup
 }
 
 func (obj *Orchestrator) Init(jobQueueSize int, nWorkers int) {
 	obj.mCtx = context.Background()
 	obj.wCtx, obj.wCtxCancel = context.WithCancel(obj.mCtx)
 	obj.jobQueue = make(chan Job, jobQueueSize)
-	for i := 0; i < nWorkers; i++ {
-		go obj.SpoolWorker(obj.wCtx, i)
-	}
+	obj.jobQueueListener = make(chan Job) //  unbuffered
+	// for i := 0; i < nWorkers; i++ {
+	// 	go obj.SpoolWorker(obj.wCtx, i)
+	// }
+	go obj.JobQueueListenerService(obj.wCtx)
 }
 
 func (obj *Orchestrator) SpoolWorker(ctx context.Context, workerId int) {
@@ -65,7 +71,7 @@ func (obj *Orchestrator) SpoolWorker(ctx context.Context, workerId int) {
 	*/
 	for {
 		select {
-		case j, ok := <-obj.jobQueue:
+		case j, ok := <-obj.jobQueueListener:
 			if !ok {
 				return
 			}
@@ -74,6 +80,38 @@ func (obj *Orchestrator) SpoolWorker(ctx context.Context, workerId int) {
 			return
 		}
 	}
+}
+
+func (obj *Orchestrator) JobQueueListenerService(ctx context.Context) {
+	go func() {
+		defer func() {
+			obj.wCtxCancel()
+			obj.wg.Wait()
+			obj.mWg.Done()
+		}()
+		obj.mWg.Add(1)
+		for j := range obj.jobQueue {
+			select {
+			case obj.jobQueueListener <- j:
+			default:
+				/*
+					if we are here then this means that no worker is available, spool a new on if
+					max limit is not reached.
+				*/
+				if obj.currActiveWorkers < N_WORKERS {
+					// need to decide on the context though, whether it should be derived or not?
+					go obj.SpoolWorker(ctx, rand.Int())
+					obj.currActiveWorkers += 1
+				}
+				/*
+					now the below code is controversial I think but it gets the work done.
+					so lets we spool a worker then we need to send the job to the worker
+					I can create a new function maybe like spoolworkerWithJob....
+				*/
+				obj.jobQueueListener <- j
+			}
+		}
+	}()
 }
 
 func (obj *Orchestrator) SendJob(j Job) {
@@ -85,7 +123,7 @@ we are passing worker context here, However we can create a job context derived 
 worker context.
 */
 func (obj *Orchestrator) ProcessJob(ctx context.Context, wokerId int, j Job) {
-	time.Sleep(time.Second*2)
+	time.Sleep(time.Second * 1)
 	fmt.Printf("Work done by worker with Id %d, value is %d\n", wokerId, j.Num)
 }
 
@@ -93,9 +131,25 @@ func (obj *Orchestrator) ProcessJob(ctx context.Context, wokerId int, j Job) {
 For now cancellation policy is dropping jobs which are buffered but waiting for the current
 processing jobs to be completed.
 */
+
+/*
+in our current implementation when we shutdown, no new jobs are taken but the jobs
+present in the queue are still processed. After that the
+*/
 func (obj *Orchestrator) GraceFulShutdown() {
 	close(obj.jobQueue)
-	obj.wCtxCancel() // cancelling all the workers
-	obj.wg.Wait()
+	/*
+		the below things are shifted to jobqueue listnere service.
+	*/
+	// obj.wCtxCancel() // cancelling all the workers
+	// obj.wg.Wait()
+
+	obj.mWg.Wait()
 	fmt.Println("Async Worker Gracefully shutdown")
 }
+
+/*
+we will create one job listener channel and one job queue channel
+workers will listen to te job listner
+
+*/
